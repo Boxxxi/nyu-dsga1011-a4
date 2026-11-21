@@ -7,11 +7,19 @@ from transformers import T5ForConditionalGeneration, T5Config
 from transformers.pytorch_utils import ALL_LAYERNORM_LAYERS
 import wandb
 
-DEVICE = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+DEVICE = (torch.device('cuda') if torch.cuda.is_available()
+          else torch.device('mps') if torch.backends.mps.is_available()
+          else torch.device('cpu'))
 
 def setup_wandb(args):
-    # Implement this if you wish to use wandb in your experiments
-    pass
+    model_type = 'ft' if args.finetune else 'scr'
+    suffix = f'_eval_beam{args.num_beams}' if getattr(args, 'eval_only', False) else ''
+    wandb.init(
+        project=os.environ.get('WANDB_PROJECT', 'dsga1011-a4-t5'),
+        name=f'{model_type}_{args.experiment_name}{suffix}',
+        group=model_type,
+        config=vars(args),
+    )
 
 def initialize_model(args):
     '''
@@ -20,7 +28,12 @@ def initialize_model(args):
     or training a T5 model initialized with the 'google-t5/t5-small' config
     from scratch.
     '''
-    pass
+    if args.finetune:
+        model = T5ForConditionalGeneration.from_pretrained("google-t5/t5-small")
+    else:
+        config = T5Config.from_pretrained("google-t5/t5-small")
+        model = T5ForConditionalGeneration(config)
+    return model.to(DEVICE)
 
 def mkdir(dirpath):
     if not os.path.exists(dirpath):
@@ -31,11 +44,16 @@ def mkdir(dirpath):
 
 def save_model(checkpoint_dir, model, best):
     # Save model checkpoint to be able to load the model later
-    pass
+    checkpoint_subdir = os.path.join(checkpoint_dir, 'best' if best else 'last')
+    model.save_pretrained(checkpoint_subdir)
 
 def load_model_from_checkpoint(args, best):
     # Load model from a checkpoint
-    pass
+    model_type = 'ft' if args.finetune else 'scr'
+    checkpoint_dir = os.path.join('checkpoints', f'{model_type}_experiments', args.experiment_name)
+    checkpoint_subdir = os.path.join(checkpoint_dir, 'best' if best else 'last')
+    model = T5ForConditionalGeneration.from_pretrained(checkpoint_subdir)
+    return model.to(DEVICE)
 
 def initialize_optimizer_and_scheduler(args, model, epoch_length):
     optimizer = initialize_optimizer(args, model)

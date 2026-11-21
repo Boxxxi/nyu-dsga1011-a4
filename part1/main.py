@@ -11,7 +11,10 @@ import evaluate
 import random
 import argparse
 from utils import *
+import utils
 import os
+
+USE_AMP = False
 
 # Set seed
 random.seed(0)
@@ -45,7 +48,31 @@ def do_train(args, model, train_dataloader, save_dir="./out"):
     # You can use progress_bar.update(1) to see the progress during training
     # You can refer to the pytorch tutorial covered in class for reference
 
-    raise NotImplementedError
+    use_amp = USE_AMP and device.type == "cuda"
+    # Scale loss up before backward prop to reduce underflow issues with small fp16 gradients,
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
+
+    for epoch in range(num_epochs):
+        running_loss, n_steps = 0.0, 0
+        for batch in train_dataloader:
+            batch = {k: v.to(device) for k, v in batch.items()}
+
+            with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=use_amp):
+                loss = model(**batch).loss
+
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            optimizer.zero_grad()
+            scaler.update()
+            lr_scheduler.step()
+
+            running_loss += loss.detach().float()
+            n_steps += 1
+            progress_bar.update(1)
+            if n_steps % 200 == 0:
+                progress_bar.set_postfix(loss=f"{running_loss.item() / n_steps:.4f}")
+
+        print(f"Epoch {epoch + 1}/{num_epochs}: mean train loss {running_loss.item() / n_steps:.4f}")
 
     ##### YOUR CODE ENDS HERE ######
 
@@ -67,7 +94,7 @@ def do_eval(eval_dataloader, output_dir, out_file):
 
     for batch in tqdm(eval_dataloader):
         batch = {k: v.to(device) for k, v in batch.items()}
-        with torch.no_grad():
+        with torch.no_grad(), torch.autocast(device_type=device.type, dtype=torch.float16, enabled=USE_AMP):
             outputs = model(**batch)
 
         logits = outputs.logits
@@ -93,7 +120,19 @@ def create_augmented_dataloader(args, dataset):
     # dataloader will be for the original training split augmented with 5k random transformed examples from the training set.
     # You may find it helpful to see how the dataloader was created at other place in this code.
 
-    raise NotImplementedError
+    original = dataset["train"].map(tokenize_function, batched=True)
+
+    # 5,000 random training reviews for custom transform
+    sampled = dataset["train"].shuffle(seed=42).select(range(5000))
+    transformed = sampled.map(custom_transform, load_from_cache_file=False)
+    transformed = transformed.map(tokenize_function, batched=True, load_from_cache_file=False)
+
+    augmented = datasets.concatenate_datasets([original, transformed])
+    augmented = augmented.remove_columns(["text"])
+    augmented = augmented.rename_column("label", "labels")
+    augmented.set_format("torch")
+
+    train_dataloader = DataLoader(augmented, shuffle=True, batch_size=args.batch_size)
 
     ##### YOUR CODE ENDS HERE ######
 
@@ -145,6 +184,8 @@ if __name__ == "__main__":
     parser.add_argument("--learning_rate", type=float, default=5e-5)
     parser.add_argument("--num_epochs", type=int, default=3)
     parser.add_argument("--batch_size", type=int, default=8)
+    parser.add_argument("--fp16", action="store_true", help="mixed precision (fp16 autocast + GradScaler) for training and eval")
+    parser.add_argument("--typo_prob", type=float, default=None, help="override TYPO_PROB, the probability that a word gets a typo")
 
     args = parser.parse_args()
 
@@ -153,12 +194,15 @@ if __name__ == "__main__":
 
     # Device
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+    USE_AMP = args.fp16 and device.type == "cuda"
+    if args.typo_prob is not None:
+        utils.TYPO_PROB = args.typo_prob
 
     # Load the tokenizer
     tokenizer = AutoTokenizer.from_pretrained("bert-base-cased")
 
     # Tokenize the dataset
-    dataset = load_dataset("imdb")
+    dataset = load_dataset("stanfordnlp/imdb")
     tokenized_dataset = dataset.map(tokenize_function, batched=True)
 
     # Prepare dataset for use by model

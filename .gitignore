@@ -2,3 +2,14 @@
 __pycache__/
 *.pyc
 .claude/settings.local.json
+.env
+
+# model checkpoints (shared on Google Drive) and training logs
+part1/out/
+part1/out_augmented/
+part2/checkpoints/
+wandb/
+*.safetensors
+*.bin
+*.pt
+*.pth

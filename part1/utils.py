@@ -13,8 +13,45 @@ import argparse
 from nltk.corpus import wordnet
 from nltk import word_tokenize
 from nltk.tokenize.treebank import TreebankWordDetokenizer
+import re
+import zlib
 
 random.seed(0)
+
+### Simulate keyboard typos
+TYPO_PROB = 0.35
+MIN_WORD_LEN = 3
+TYPO_SEED = 0
+
+KEY_ROWS = [("qwertyuiop", 0.0), ("asdfghjkl", 0.25), ("zxcvbnm", 0.75)]
+KEY_POS = {k: (row, col + shift) for row, (keys, shift) in enumerate(KEY_ROWS) for col, k in enumerate(keys)}
+# Neighbours (e.g. s -> a, d, w, e, z, x)
+NEIGHBORS = {
+    k: [m for m, (r2, c2) in KEY_POS.items() if m != k and (r - r2) ** 2 + (c - c2) ** 2 <= 1.3 ** 2]
+    for k, (r, c) in KEY_POS.items()
+}
+
+
+def typo(word, rng):
+    """Apply one keyboard typo to a word"""
+    i = rng.randrange(1, len(word))  # position of the typo
+    op = rng.choice(("substitute", "delete", "insert", "swap"))
+    ch = word[i]
+
+    if op == "swap":  # two neighbouring letters typed in the wrong order
+        a = i if i + 1 < len(word) else i - 1 
+        if word[a] != word[a + 1]:
+            return word[:a] + word[a + 1] + word[a] + word[a + 2:]
+        op = "substitute"
+
+    if op == "delete":  # a key not pressed
+        return word[:i] + word[i + 1:]
+
+    near = rng.choice(NEIGHBORS[ch.lower()])
+    near = near.upper() if ch.isupper() else near
+    if op == "insert":  # the neighbouring key is hit as well
+        return word[:i + 1] + near + word[i + 1:]
+    return word[:i] + near + word[i + 1:]  # the neighbouring key is hit instead
 
 
 def example_transform(example):
@@ -44,7 +81,16 @@ def custom_transform(example):
 
     # You should update example["text"] using your transformation
 
-    raise NotImplementedError
+    text = example["text"]
+    # setting SEED for reproducibility
+    rng = random.Random(TYPO_SEED * 2 ** 32 + zlib.crc32(text.encode("utf-8")))
+
+    def maybetypo(match):
+        word = match.group()
+        return typo(word, rng) if rng.random() < TYPO_PROB else word
+
+    # change only letters
+    example["text"] = re.sub(r"[A-Za-z]{%d,}" % MIN_WORD_LEN, maybetypo, text)
 
     ##### YOUR CODE ENDS HERE ######
 

@@ -2,6 +2,7 @@ import sqlite3
 import numpy as np
 import os
 import re
+import time
 import pickle
 import random
 from tqdm import tqdm
@@ -12,6 +13,7 @@ from typing import List, Any
 import torch
 
 DB_PATH = 'data/flight_database.db'
+QUERY_TIME_LIMIT = 20
 
 def compute_metrics(gt_path: str, model_path: str, gt_query_records: str = None, model_query_records: str = None):
     '''
@@ -92,7 +94,7 @@ def compute_records(processed_qs: List[str]):
         * processed_qs (List[str]): The list of SQL queries to execute
     '''
     num_threads = 10
-    timeout_secs = 120
+    timeout_secs = 1200
 
     pool = ThreadPoolExecutor(num_threads)
     futures = []
@@ -124,6 +126,8 @@ def compute_records(processed_qs: List[str]):
 
 def compute_record(query_id, query):
     conn = sqlite3.connect(DB_PATH)
+    deadline = time.monotonic() + QUERY_TIME_LIMIT
+    conn.set_progress_handler(lambda: time.monotonic() > deadline, 10000)  # True aborts the query
     cursor = conn.cursor()
 
     try:
@@ -132,7 +136,7 @@ def compute_record(query_id, query):
         error_msg = ""
     except Exception as e:
         rec = []
-        error_msg = f"{type(e).__name__}: {e}"
+        error_msg = "Query timed out" if "interrupted" in str(e) else f"{type(e).__name__}: {e}"
 
     conn.close()
     return query_id, rec, error_msg
